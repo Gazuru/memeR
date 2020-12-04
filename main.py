@@ -1,38 +1,34 @@
 from __future__ import print_function
 
-import PIL
-from PIL import Image, ImageOps
-
-import tqdm
+import glob
+import random
 
 import numpy as np
+from PIL import Image, ImageOps
+from keras.layers import (Conv2D, Dense, Flatten, MaxPooling2D)
+from keras.models import Sequential
+from sklearn.utils import shuffle
+import tensorflow
+from matplotlib import pyplot as plt
 
-import glob
-
-import tensorflow as tf
-
-import keras
-from keras.layers import (Activation, Conv2D, Dense, Dropout, Flatten, MaxPooling2D)
-from keras.models import Sequential, load_model
-from keras import backend as K
-
-train_dir = "C:/Users/energ/Desktop/témalab/train/train"
-valid_dir = "C:/Users/energ/Desktop/témalab/valid/valid"
+train_dir = "D:/BME/5/Témalabor/train/train"
+valid_dir = "D:/BME/5/Témalabor/valid/valid"
 
 
 # print(train_dir + valid_dir)
 
-
 def load_images():
     for i in range(num_of_classes):
         for f in glob.iglob(train_dir + "/" + class_names[i] + "/*"):
-            images.append(Image.open(f))
+            images.append(Image.open(f).convert('RGB'))
+            labels.append(i)
 
 
 def load_valid():
     for i in range(num_of_classes):
         for f in glob.iglob(valid_dir + "/" + class_names[i] + "/*"):
-            val_images.append(Image.open(f))
+            val_images.append(Image.open(f).convert('RGB'))
+            val_labels.append(i)
 
 
 def max_res():
@@ -43,19 +39,29 @@ def max_res():
     return max_width, max_height
 
 
-def pad_images(x):
-    for i in range(len(x)):
-        im_width, im_height = x[i].size
-        delta_w = _WIDTH - im_width
-        delta_h = _HEIGHT - im_height
-        padding = (delta_w // 2, delta_h // 2, delta_w - (delta_w // 2), delta_h - (delta_h // 2))
-        x[i] = ImageOps.expand(x[i], padding)
+def downsample_images(im):
+    for i in range(len(im)):
+        im_width, im_height = im[i].size
+        if im_width == im_height:
+            im[i] = im[i].resize(size, Image.ANTIALIAS)
+        elif im_width > im_height:
+            ratio = size[0] / im_width
+            ns = (int(im_width * ratio), int(im_height * ratio))
+            im[i] = im[i].resize(ns, Image.ANTIALIAS)
+        else:
+            ratio = size[1] / im_height
+            ns = (int(im_width * ratio), int(im_height * ratio))
+            im[i] = im[i].resize(ns, Image.ANTIALIAS)
 
 
-def open_largest():
-    for i in range(len(images)):
-        if images[i].size == (_WIDTH, _HEIGHT):
-            images[i].show()
+def pad_images(im):
+    for i in range(len(im)):
+        if im[i].size < size:
+            im_width, im_height = im[i].size
+            delta_w = size[0] - im_width
+            delta_h = size[1] - im_height
+            padding = (delta_w // 2, delta_h // 2, delta_w - (delta_w // 2), delta_h - (delta_h // 2))
+            im[i] = ImageOps.expand(im[i], padding)
 
 
 class_names = ["10_guy", "advice_mallard", "afraid_to_ask_andy", "angry_advice_mallard", "archer",
@@ -85,30 +91,59 @@ class_names = ["10_guy", "advice_mallard", "afraid_to_ask_andy", "angry_advice_m
                "we_dont_do_that_here", "wednesday_frog", "who_killed_hannibal"]
 
 num_of_classes = 10
+size = 100, 100
 
 images = []
+labels = []
 val_images = []
+val_labels = []
 
 load_images()
 load_valid()
+labels = np.array(labels)
+val_labels = np.array(val_labels)
 
-_WIDTH, _HEIGHT = max_res()
+downsample_images(images)
+downsample_images(val_images)
 
 pad_images(images)
 pad_images(val_images)
 
+for i in range(len(images)):
+    images[i] = np.array(images[i].getdata()).reshape(size[1], size[0], 3)
+
+images = np.asarray(images)
+
+for y in range(len(val_images)):
+    val_images[y] = np.array(val_images[y].getdata()).reshape(size[1], size[0], 3)
+
+val_images = np.asarray(val_images)
 
 # összes kép nagy tömbben, shuffle, és beadni train
+
+images, labels = shuffle(images, labels, random_state=25)
+images = images / 255.0
+val_images = val_images / 255.0
+
 # annyi neuron az utolsó rétegen, ahány osztály lehet a kimenet
 # teszt először kevesebb osztállyal
 # HOT_ENCODING - az osztályok enkódolása
-"""
+
+n_train = images.shape[0]
+n_test = val_images.shape[0]
+
+print("Number of training examples: {}".format(n_train))
+print("Number of testing examples: {}".format(n_test))
+
+tensorflow.config.experimental.list_physical_devices('GPU')
+
 model = Sequential()
-model.add(Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)))
+model.add(Conv2D(128, (3, 3), activation='relu', input_shape=(size[1], size[0], 3)))
 model.add(MaxPooling2D((2, 2)))
 model.add(Conv2D(64, (3, 3), activation='relu'))
 model.add(MaxPooling2D((2, 2)))
 model.add(Conv2D(64, (3, 3), activation='relu'))
+model.add(MaxPooling2D((2, 2)))
 
 # ez a rész fent lényegkiemelés
 
@@ -117,14 +152,26 @@ model.add(Flatten())
 # ez összeköti a fully connected részt a lényegkiemeléssel
 
 model.add(Dense(64, activation='relu'))
-model.add(Dense(num_of_classes))
+model.add(Dense(num_of_classes, activation='softmax'))
 
 # fully connected
 
-model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+model.summary()
+
+model.compile(optimizer='adam', loss='sparse_categorical_crossentropy',
               metrics=['accuracy'])
 
-history = model.fit()
+history = model.fit(images, labels, batch_size=128, epochs=18, validation_split=0.3)
 
-model.summary()
-"""
+test_loss = model.evaluate(val_images, val_labels)
+
+rnd_test_num = 10
+
+for i in range(rnd_test_num):
+    test_image = val_images[random.randrange(num_of_classes * 40)]
+
+    pred = model.predict(np.array([test_image]))
+
+    plt.imshow(test_image, interpolation='nearest')
+    plt.title(class_names[np.argmax(pred)])
+    plt.show()
